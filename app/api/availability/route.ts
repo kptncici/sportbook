@@ -1,4 +1,3 @@
-// app/api/availability/route.ts
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -22,7 +21,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // parse date "YYYY-MM-DD"
+    // Parse date "YYYY-MM-DD"
     const selectedDate = new Date(date + "T00:00:00");
     if (Number.isNaN(selectedDate.getTime())) {
       return NextResponse.json(
@@ -31,11 +30,17 @@ export async function POST(req: Request) {
       );
     }
 
-    const now = new Date();
-    const isToday = selectedDate.toDateString() === now.toDateString();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes(); // FIX timezone
+    // ============================
+    //  FIX TIMEZONE → WIB
+    // ============================
+    const now = new Date(
+      new Date().toLocaleString("en-US", { timeZone: "Asia/Jakarta" })
+    );
 
-    // Generate slots: 08:00–09:00 ... 22:00–23:00
+    const isToday = selectedDate.toDateString() === now.toDateString();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+    // Generate slots (08:00 -> 23:00)
     const SLOTS: { label: string; start: string; end: string }[] = [];
     for (let h = 8; h < 23; h++) {
       const start = `${pad(h)}:00`;
@@ -43,20 +48,18 @@ export async function POST(req: Request) {
       SLOTS.push({ label: `${start} - ${end}`, start, end });
     }
 
-    // DB range (full day)
+    // Date range for DB
     const startOfDay = new Date(selectedDate);
     startOfDay.setHours(0, 0, 0, 0);
 
     const nextDay = new Date(startOfDay);
     nextDay.setDate(nextDay.getDate() + 1);
 
+    // Get bookings
     const bookings = await prisma.booking.findMany({
       where: {
         fieldId,
-        date: {
-          gte: startOfDay,
-          lt: nextDay,
-        },
+        date: { gte: startOfDay, lt: nextDay },
         status: { notIn: ["REJECTED", "CANCELED"] },
       },
       select: { timeStart: true, timeEnd: true, status: true },
@@ -68,19 +71,22 @@ export async function POST(req: Request) {
       status: b.status,
     }));
 
+    // Build availability
     const availability = SLOTS.map((slot) => {
       let status = "Tersedia";
 
       const slotStartMin = timeToMinutes(slot.start);
       const slotEndMin = timeToMinutes(slot.end);
 
-      // FIX: Lewat waktu → pakai startMin
+      // ============================
+      // FIX: Lewat Waktu (pakai WIB)
+      // ============================
       if (isToday && slotStartMin <= nowMinutes) {
         status = "Lewat Waktu";
         return { ...slot, status };
       }
 
-      // Check overlap booking
+      // Check overlap
       const overlap = bookingsMinutes.find(
         (b) => b.startMin < slotEndMin && b.endMin > slotStartMin
       );
@@ -95,7 +101,7 @@ export async function POST(req: Request) {
     });
 
     console.log(
-      `[availability] field=${fieldId} date=${date} isToday=${isToday} now=${now.toTimeString().slice(0,5)}`
+      `[availability] field=${fieldId} date=${date} isToday=${isToday} now=${now.toTimeString().slice(0, 5)}`
     );
 
     return NextResponse.json(availability);
