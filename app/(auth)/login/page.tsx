@@ -22,17 +22,12 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await signIn("credentials", {
-        redirect: false,
+      await signIn("credentials", {
         email: form.email,
         password: form.password,
+        redirect: true,
+        callbackUrl: "/dashboard",
       });
-
-      if (!res?.error) {
-        router.push("/dashboard");
-      } else {
-        alert("Email atau password salah!");
-      }
     } catch (err) {
       console.error("Login error:", err);
       alert("Terjadi kesalahan server!");
@@ -78,6 +73,7 @@ export default function LoginPage() {
         <Button
           className="w-full bg-green-500 hover:bg-green-600 text-white py-2 rounded-lg shadow-lg transition-all"
           disabled={loading}
+          type="submit"
         >
           {loading ? "Memproses..." : "Login"}
         </Button>
