@@ -2,26 +2,23 @@ import { NextResponse } from "next/server";
 import midtransClient from "midtrans-client";
 import { prisma } from "@/lib/prisma";
 
-export const runtime = "nodejs"; // Midtrans client hanya jalan di Node
+export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { bookingId } = body;
-
+    const { bookingId } = await req.json();
     if (!bookingId) {
       return NextResponse.json({ error: "Booking ID diperlukan" }, { status: 400 });
     }
 
-    // Validasi env Midtrans
     if (!process.env.MIDTRANS_SERVER_KEY) {
       return NextResponse.json(
-        { error: "MIDTRANS_SERVER_KEY tidak ditemukan di environment" },
+        { error: "MIDTRANS_SERVER_KEY tidak ditemukan" },
         { status: 500 }
       );
     }
 
-    // Ambil data booking + relasi user & field
+    // Ambil booking
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       include: { user: true, field: true },
@@ -38,17 +35,32 @@ export async function POST(req: Request) {
       );
     }
 
-    // Inisialisasi Midtrans Snap
+    // Buat order id unik
+    const orderId = `SPORTBOOK-${booking.id}-${Date.now()}`;
+
+    // === 1) Buat record Transaction di DB ===
+    const transaction = await prisma.transaction.create({
+      data: {
+        orderId,
+        status: "PENDING",
+        paymentType: null,
+        grossAmount: booking.field.price,
+      },
+    });
+
+    // === 2) Sambungkan transaction ke booking ===
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { transactionId: transaction.id },
+    });
+
+    // === 3) Buat Midtrans transaction ===
     const snap = new midtransClient.Snap({
       isProduction: false,
       serverKey: process.env.MIDTRANS_SERVER_KEY!,
     });
 
-    // Generate order_id aman
-    const orderId = `SPORTBOOK-${booking.id}`.substring(0, 45);
-
-    // Buat transaksi Snap
-    const transaction = await snap.createTransaction({
+    const snapTx = await snap.createTransaction({
       transaction_details: {
         order_id: orderId,
         gross_amount: booking.field.price,
@@ -61,8 +73,8 @@ export async function POST(req: Request) {
         {
           id: booking.field.id,
           name: booking.field.name,
-          price: booking.field.price,
           quantity: 1,
+          price: booking.field.price,
         },
       ],
       enabled_payments: ["gopay", "qris", "bca_va", "bni_va", "bri_va"],
@@ -70,11 +82,14 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      token: transaction.token,
-      paymentUrl: transaction.redirect_url,
+      token: snapTx.token,
+      paymentUrl: snapTx.redirect_url,
+      orderId,
+      transactionId: transaction.id,
     });
+
   } catch (err) {
-    console.error("🔥 Midtrans payment error:", err);
+    console.error("🔥 Payment Create Error:", err);
     return NextResponse.json(
       { error: "Gagal membuat pembayaran" },
       { status: 500 }

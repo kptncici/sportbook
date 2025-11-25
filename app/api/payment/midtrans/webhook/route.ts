@@ -19,7 +19,9 @@ export async function POST(req: Request) {
 
     console.log("📩 Midtrans Webhook:", body);
 
-    // UPDATE / CREATE TRANSACTION
+    /* ============================================================
+        1️⃣  UPDATE / SAVE TRANSACTION
+    ============================================================ */
     const tx = await prisma.transaction.upsert({
       where: { orderId: order_id },
       update: {
@@ -37,27 +39,39 @@ export async function POST(req: Request) {
       },
     });
 
-    // Cari booking terkait
-    const booking = await prisma.booking.findFirst({
+    /* ============================================================
+        2️⃣  CARI BOOKING BERDASARKAN transactionId
+    ============================================================ */
+    let booking = await prisma.booking.findFirst({
       where: { transactionId: tx.id },
       include: { user: true, field: true },
     });
 
+    // JIKA booking NULL → fallback by orderId
     if (!booking) {
-      console.log("⚠️ Booking tidak ditemukan untuk transactionId:", tx.id);
+      booking = await prisma.booking.findFirst({
+        where: {
+          id: order_id.replace("SPORTBOOK-", "").split("-")[0], // ekstrak id booking
+        },
+        include: { user: true, field: true },
+      });
+    }
+
+    if (!booking) {
+      console.log("⚠️ Booking tidak ditemukan untuk orderId:", order_id);
       return NextResponse.json({ success: true });
     }
 
     /* ============================================================
-        📌 BAGIAN 1 — Update status booking
-       ============================================================ */
+        3️⃣ UPDATE STATUS BOOKING
+    ============================================================ */
     if (["settlement", "capture"].includes(transaction_status)) {
       await prisma.booking.update({
         where: { id: booking.id },
         data: { status: "PAID" },
       });
 
-      console.log("💰 Pembayaran sukses → kirim e-ticket");
+      console.log("💰 Pembayaran sukses → update booking menjadi PAID");
     }
 
     if (["cancel", "expire", "deny"].includes(transaction_status)) {
@@ -69,24 +83,24 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
-    /* ============================================================
-        📌 BAGIAN 2 — KIRIM E-TICKET PDF (hanya jika PAID)
-       ============================================================ */
+    // Kalau bukan pembayaran sukses, tidak perlu kirim e-ticket
     if (!["settlement", "capture"].includes(transaction_status)) {
       return NextResponse.json({ success: true });
     }
 
-    // Generate QR Code
+    /* ============================================================
+        4️⃣ GENERATE E-TICKET PDF
+    ============================================================ */
+
     const qrBase64 = await QRCode.toDataURL(booking.id);
     const qrBuffer = Buffer.from(qrBase64.split(",")[1], "base64");
 
-    // Buat PDF
     const doc = new PDFDocument({ size: "A5", margin: 40 });
     const buffers: Buffer[] = [];
 
     doc.on("data", (chunk) => buffers.push(chunk));
 
-    // Load font aman
+    // load font aman
     try {
       const fontPaths = [
         "C:\\Windows\\Fonts\\arial.ttf",
@@ -105,7 +119,7 @@ export async function POST(req: Request) {
       doc.font("Times-Roman");
     }
 
-    // HEADER
+    // header
     doc
       .rect(0, 0, doc.page.width, 60)
       .fill("#1e3a8a")
@@ -113,16 +127,16 @@ export async function POST(req: Request) {
       .fontSize(20)
       .text("SPORTBOOK E-TICKET", 40, 20);
 
-    // QR CODE
+    // QR
     doc.image(qrBuffer, 150, 100, { width: 100 });
 
-    // INFO
+    // info booking
     const info: [string, string][] = [
       ["Nama", booking.user?.name ?? booking.user?.email ?? "-"],
       ["Lapangan", booking.field?.name ?? "-"],
       ["Tanggal", booking.date.toISOString().slice(0, 10)],
       ["Waktu", `${booking.timeStart} - ${booking.timeEnd}`],
-      ["Harga", `Rp ${(booking.field?.price ?? 0).toLocaleString("id-ID")}`],
+      ["Harga", `Rp ${booking.field?.price.toLocaleString("id-ID")}`],
       ["Status", "✔ Sudah Dibayar"],
     ];
 
@@ -139,7 +153,9 @@ export async function POST(req: Request) {
       doc.on("end", () => resolve(Buffer.concat(buffers)))
     );
 
-    // KIRIM EMAIL
+    /* ============================================================
+        5️⃣ KIRIM E-TICKET VIA EMAIL
+    ============================================================ */
     await sendMail({
       to: booking.user.email,
       subject: "E-Ticket SportBook — Pembayaran Berhasil",
